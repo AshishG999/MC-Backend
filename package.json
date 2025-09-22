@@ -1,0 +1,46 @@
+{
+  "name": "mc-backend",
+  "version": "1.0.0",
+  "description": "Sites Controller",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "@octokit/rest": "^22.0.0",
+    "axios": "^1.4.0",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "dotenv": "^16.1.4",
+    "express": "^4.18.2",
+    "express-rate-limit": "^6.7.0",
+    "express-useragent": "^1.0.15",
+    "express-validator": "^6.15.0",
+    "geoip-lite": "^1.4.2",
+    "helmet": "^7.0.0",
+    "jsonwebtoken": "^9.0.0",
+    "kafkajs": "^2.2.0",
+    "mongoose": "^7.5.0",
+    "morgan": "^1.10.0",
+    "phone": "^3.1.28",
+    "request-ip": "^3.3.0",
+    "sanitize-html": "^2.11.0",
+    "winston": "^3.10.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.4"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AshishG999/MC-Backend.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/AshishG999/MC-Backend/issues"
+  },
+  "homepage": "https://github.com/AshishG999/MC-Backend#readme"
+}
