@@ -4,6 +4,10 @@ services:
     image: wurstmeister/zookeeper
     ports:
       - '2181:2181'
+    networks:
+      - app_network
+    depends_on:
+      - kafka
   kafka:
     image: wurstmeister/kafka
     ports:
@@ -13,8 +17,19 @@ services:
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
     depends_on:
       - zookeeper
-
-# network:
-#   mc_network:
-#     driver: bridge
-#     external: true    
+      - app_network
+ 
+  backend:
+    build: ./
+    ports:
+      - "9500:9500"
+    depends_on:
+      - kafka
+    networks:
+      - app_network
+ 
+network:
+  app_network:
+    driver: bridge
+    external: true
+ 
