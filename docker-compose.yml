@@ -41,9 +41,9 @@ services:
     build: ./   # adjust if your Dockerfile is elsewhere
 
     ports:
-
+    
       - "9500:9500"
-
+    
     depends_on:
 
       - kafka
