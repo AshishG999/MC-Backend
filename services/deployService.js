@@ -4,6 +4,7 @@ const { exec } = require('child_process');
 const { Octokit } = require('@octokit/rest');
 const githubCache = require('./githubCache');
 const logger = require('../config/logger');
+const Project = require('../models/Project');
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_USER = process.env.GITHUB_USER;
@@ -32,6 +33,7 @@ async function createGithubRepo(domain) {
       private: false,
       auto_init: false,
     });
+    await Project.findOneAndUpdate({domain},{githubRepo: `https://github.com/${GITHUB_USER}/${repoName}.git`})
     logger.info(`GitHub repo created: ${repoName}`);
     return data.clone_url;
   } catch (err) {
