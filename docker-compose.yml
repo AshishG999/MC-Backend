@@ -1,37 +1,63 @@
 version: '3.8'
  
 services:
+
   zookeeper:
+
     image: wurstmeister/zookeeper
+
     ports:
-      - '2181:2181'
+
+      - "2181:2181"
+
     networks:
+
       - app_network
-    depends_on:
-      - kafka
  
   kafka:
+
     image: wurstmeister/kafka
+
     ports:
-      - '9092:9092'
+
+      - "9092:9092"
+
     environment:
+
       KAFKA_ADVERTISED_HOST_NAME: localhost
+
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+
     depends_on:
+
       - zookeeper
+
     networks:
+
       - app_network
  
   backend:
-    build: ./  # adjust path if needed
+
+    build: ./   # adjust if your Dockerfile is elsewhere
+
     ports:
+
       - "9500:9500"
+
     depends_on:
+
       - kafka
+
     networks:
+
       - app_network
  
-networks:   # ✅ plural
+networks:
+
   app_network:
+
     driver: bridge
-    external: true   # only if you created it manually
+
+    external: true   # remove this if you haven't manually created the network
+
+ 
