@@ -48,5 +48,5 @@ app.use('/api/v1/logs', logsRoutes);
 app.get('/', (req, res) => res.json({ ok: true, service: 'microsite-backend' }));
 
 
-const port = process.env.PORT || 4000;
+const port = process.env.PORT || 9500
 app.listen(port, () => logger.info(`Server started on port ${port}`));
