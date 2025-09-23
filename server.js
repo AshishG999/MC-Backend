@@ -16,7 +16,18 @@ const webhookRoutes = require('./routes/webhooks');
 
 const app = express();
 app.use(helmet());
-app.use(cors());
+const allowedOrigins = ['https://portal.urbanpillar.info'];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true
+}));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan('combined'));
@@ -39,10 +50,10 @@ logger.error('Kafka init failed', err);
 
 
 // Routes
-app.use('/api/v1/projects', projectsRoutes);
-app.use('/api/v1/leads', leadsRoutes);
-app.use('/api/v1/domain-emails', domainEmailRoutes);
-app.use('/api/v1/logs', logsRoutes);
+app.use('/v1/projects', projectsRoutes);
+app.use('/v1/leads', leadsRoutes);
+app.use('/v1/domain-emails', domainEmailRoutes);
+app.use('/v1/logs', logsRoutes);
 
 
 app.get('/', (req, res) => res.json({ ok: true, service: 'microsite-backend' }));
