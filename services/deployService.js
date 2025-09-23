@@ -30,7 +30,7 @@ async function createGithubRepo(domain) {
   try {
     const { data } = await octokit.repos.createForAuthenticatedUser({
       name: repoName,
-      private: false,
+      private: true,
       auto_init: false,
     });
     await Project.findOneAndUpdate({domain},{githubRepo: `https://github.com/${GITHUB_USER}/${repoName}.git`})
