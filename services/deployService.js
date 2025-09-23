@@ -81,16 +81,17 @@ function initProjectFolder(projectName) {
  */
 async function pushToGithub(projectPath, repoUrl) {
   return new Promise((resolve, reject) => {
+    const tokenRepoUrl = repoUrl.replace(
+      'https://',
+      `https://${GITHUB_USER}:${GITHUB_TOKEN}@`
+    );
+
     const cmds = [
       `cd ${projectPath}`,
-      // Initialize git if not exists
       'if [ ! -d ".git" ]; then git init; fi',
-      // Ensure correct remote
       'git remote remove origin || true',
-      `git remote add origin ${repoUrl}`,
-      // Stage all files
+      `git remote add origin ${tokenRepoUrl}`,
       'git add .',
-      // Commit (ignore error if nothing to commit)
       'git commit -m "Initial commit" || true',
       'git branch -M main',
       'git push -u origin main -f'
