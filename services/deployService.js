@@ -109,7 +109,7 @@ async function pushToGithub(projectPath, repoUrl) {
 }
 
 /**
- * Create Nginx config
+ * Create Nginx config and install SSL via Certbot
  */
 function createNginxConfig(domain, projectName) {
   const configContent = `
@@ -133,9 +133,31 @@ server {
   const enabledPath = path.join(NGINX_SITES_ENABLED, projectName);
   if (!fs.existsSync(enabledPath)) fs.symlinkSync(configPath, enabledPath);
 
+  // Reload Nginx
   exec('nginx -s reload', (err, stdout, stderr) => {
-    if (err) logger.error(`Nginx reload error: ${stderr}`);
-    else logger.info(`Nginx reloaded for ${domain}`);
+    if (err) {
+      logger.error(`Nginx reload error: ${stderr}`);
+    } else {
+      logger.info(`Nginx reloaded for ${domain}`);
+
+      // Run Certbot to install SSL certificate
+      const certbotCmd = `certbot --nginx -d ${domain} --non-interactive --agree-tos -m admin@${domain} --redirect`;
+      exec(certbotCmd, (errCert, stdoutCert, stderrCert) => {
+        if (errCert) {
+          logger.error(`Certbot SSL install error: ${stderrCert}`);
+        } else {
+          logger.info(`Certbot SSL installed for ${domain}: ${stdoutCert}`);
+          // Test auto-renewal
+          exec('certbot renew --dry-run', (errRenew, stdoutRenew, stderrRenew) => {
+            if (errRenew) {
+              logger.error(`Certbot renewal test failed: ${stderrRenew}`);
+            } else {
+              logger.info(`Certbot renewal test successful: ${stdoutRenew}`);
+            }
+          });
+        }
+      });
+    }
   });
 }
 
