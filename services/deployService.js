@@ -79,6 +79,24 @@ function initProjectFolder(projectName) {
 /**
  * Push local project to GitHub
  */
+async function deleteProject(project) {
+    const repoName = sanitizeRepoName(project.domain);
+    const projectPath = initProjectFolder(repoName);
+
+     const cmds = [
+      `rm -R ${projectPath}`,
+    ].join(' && ');
+
+    exec(cmds, (err, stdout, stderr) => {
+      if (err) {
+        logger.error(`delete ${projectPath} error: ${stderr}`);
+        return reject(err);
+      }
+      logger.info(`delete ${projectPath}: ${stdout}`);
+      resolve(true);
+    });
+}
+
 async function pushToGithub(projectPath, repoUrl) {
   return new Promise((resolve, reject) => {
     const tokenRepoUrl = repoUrl.replace(
@@ -202,4 +220,4 @@ async function deployProject(project) {
   }
 }
 
-module.exports = { deployProject };
+module.exports = { deployProject , deleteProject};

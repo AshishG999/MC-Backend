@@ -4,7 +4,7 @@ const { body, param } = require('express-validator');
 const validateRequest = require('../middleware/validateRequest');
 const sanitizeInput = require('../middleware/sanitizeInput');
 const Project = require('../models/Project');
-const { deployProject } = require('../services/deployService');
+const { deployProject, deleteProject } = require('../services/deployService');
 const githubCache = require('../services/githubCache');
 const { Octokit } = require('@octokit/rest');
 
@@ -148,7 +148,7 @@ router.delete('/:id', async (req, res) => {
     }
 
     // 2. Delete deployed project (call your deployService cleanup)
-    // await deployService.deleteProject(project);
+    await deleteProject(project);
 
     // 3. Delete from database
     await Project.findByIdAndDelete(req.params.id);
