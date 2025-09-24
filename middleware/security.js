@@ -1,7 +1,7 @@
 // middleware/security.js
 const logger = require("../config/logger");
 
-const ALLOWED_DOMAIN = "https://portal.urbanpillar.info";
+const ALLOWED_DOMAIN = process.env.APP_STATE === 'developer' ? 'http://localhost:3000' :"https://portal.urbanpillar.info";
 
 function securityMiddleware(req, res, next) {
   const origin = req.headers.origin || "";

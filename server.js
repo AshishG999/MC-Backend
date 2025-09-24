@@ -24,13 +24,13 @@ const app = express();
 app.use(helmet());
 
 // ✅ CORS restriction (only frontend domain allowed)
-const ALLOWED_DOMAIN = "https://portal.urbanpillar.info";
+const ALLOWED_DOMAIN = process.env.APP_STATE === 'developer' ? 'http://localhost:3000' :"https://safebridge.urbanpillar.info";
 app.use(cors({
   origin: ALLOWED_DOMAIN,
   credentials: true
 }));
 
-// ✅ Global middlewares
+// ✅ Global middleware
 app.use(ipBlocker);           // Block blacklisted IPs
 app.use(securityMiddleware);  // Check origin/referer
 app.use(logVisitor);          // Log visitor info
