@@ -33,13 +33,13 @@ async function logVisitor(req, res, next) {
     const log = new VisitorLog(logData);
     await log.save();
     logger.info(`Visitor logged for ${log.projectDomain} - IP: ${clientIp}`);
-
+    let logsData = await VisitorLog.find({}).limit(40);
     // Send Kafka message
     const producer = getProducer();
     await producer.send({
       topic: 'visits',
       messages: [
-        { key: log.projectDomain, value: JSON.stringify(logData) },
+        { key: log.projectDomain, value: JSON.stringify(logsData) },
       ],
     });
     logger.info(`Visitor log sent to Kafka for ${log.projectDomain}`);
