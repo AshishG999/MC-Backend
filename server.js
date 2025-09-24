@@ -24,7 +24,7 @@ const app = express();
 app.use(helmet());
 
 // ✅ CORS restriction (only frontend domain allowed)
-const ALLOWED_DOMAIN = process.env.APP_STATE === 'developer' ? 'http://localhost:3000' :"https://safebridge.urbanpillar.info";
+const ALLOWED_DOMAIN = process.env.APP_STATE === 'developer' ? 'http://localhost:3000' :"https://portal.urbanpillar.info";
 app.use(cors({
   origin: ALLOWED_DOMAIN,
   credentials: true
