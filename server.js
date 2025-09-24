@@ -19,7 +19,7 @@ const startDetector = require('./services/suspiciousTrafficDetector');
 const http = require('http');
 const WebSocket = require('ws');
 const { startKafkaWsServer } = require('./services/kafkaWsBridge');
-const { startNginxLogProducer } = require('./services/nginxLogToKafka');
+const { startNginxLogTail } = require('./services/nginxLogToKafka');
 
 startDetector();
 const app = express();
@@ -70,7 +70,7 @@ const server = http.createServer(app);
 // ✅ Attach WebSocket server
 // const wss = new WebSocket.Server({ server, path: "/ws" });
 startKafkaWsServer(server).catch(err => logger.error("WS Server Error:", err));
-startNginxLogProducer().catch(err => console.error(err));
+startNginxLogTail().catch(err => console.error(err));
 // ✅ Start server
 const port = process.env.PORT || 9500;
 server.listen(port, () => logger.info(`Server started on port ${port}`));
