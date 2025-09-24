@@ -37,7 +37,7 @@ function isSuspicious(log) {
 
 async function startDetector() {
   await consumer.connect();
-  await consumer.subscribe({ topic: 'visitor-logs', fromBeginning: false });
+  await consumer.subscribe({ topic: 'visits', fromBeginning: false });
 
   await consumer.run({
     eachMessage: async ({ message }) => {

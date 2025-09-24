@@ -6,21 +6,22 @@ const brokers = (process.env.KAFKA_BROKERS || 'localhost:9092').split(',');
 const kafka = new Kafka({ clientId: 'microsite-dashboard', brokers });
 
 async function startKafkaWsServer(server) {
-  // Start WebSocket server
-  const wss = new WebSocket.Server({ server });
-  logger.info('WebSocket server started for dashboard');
+  // ✅ Start WebSocket server on /ws
+  const wss = new WebSocket.Server({ server, path: "/ws" });
+  logger.info('WebSocket server started for dashboard at /ws');
 
-  // Log client connections
+  // ✅ Log client connections
   wss.on('connection', (ws, req) => {
     const clientIp = req.socket.remoteAddress;
     logger.info(`WebSocket client connected: ${clientIp}`);
+
     ws.on('close', () => logger.info(`WebSocket client disconnected: ${clientIp}`));
   });
 
   const consumer = kafka.consumer({ groupId: 'dashboard-group' });
   await consumer.connect();
 
-  // Topics to subscribe
+  // ✅ Topics to subscribe
   const topics = ['leads', 'visits', 'suspicious-events', 'deployments'];
   for (const topic of topics) {
     await consumer.subscribe({ topic, fromBeginning: false });
@@ -38,16 +39,40 @@ async function startKafkaWsServer(server) {
 
       const payload = { topic, data };
 
-      // Broadcast to all connected clients
+      // ✅ Broadcast to all connected clients
       wss.clients.forEach(client => {
         if (client.readyState === WebSocket.OPEN) {
+          console.log(`Sending payload to client: ${JSON.stringify(payload)}`);
           client.send(JSON.stringify(payload));
         }
       });
+
     },
   });
 
-  return wss; // Return instance if needed
+  // ✅ Handle consumer crashes
+  consumer.on("consumer.crash", (event) => {
+    logger.error("Kafka consumer crashed", event.payload.error);
+  });
+
+  // ✅ Heartbeat for WS keep-alive
+  setInterval(() => {
+    wss.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.ping();
+      }
+    });
+  }, 30000);
+
+  // ✅ Graceful shutdown
+  process.on("SIGINT", async () => {
+    await consumer.disconnect();
+    wss.close();
+    logger.info("Kafka consumer & WS closed cleanly");
+    process.exit(0);
+  });
+
+  return wss; // return instance if needed
 }
 
 module.exports = { startKafkaWsServer };
