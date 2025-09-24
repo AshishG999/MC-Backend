@@ -72,7 +72,7 @@ async function initProjectFolder(projectName, domain = null) {
   }
 
   fs.mkdirSync(projectPath, { recursive: true });
-  let templateRepoUrl = `https://github.com/${GITHUB_USER}/${sanitizeRepoName(domain)}.git`
+  let templateRepoUrl = `https://${GITHUB_TOKEN}@github.com/${GITHUB_USER}/${sanitizeRepoName(domain)}.git`
   if (templateRepoUrl) {
     await cloneRepo(templateRepoUrl, projectPath);
   } else {

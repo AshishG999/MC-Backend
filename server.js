@@ -16,6 +16,8 @@ const webhookRoutes = require('./routes/webhooks');
 const securityMiddleware = require("./middleware/security");
 const ipBlocker = require('./middleware/ipBlocker');
 const startDetector = require('./services/suspiciousTrafficDetector');
+const http = require('http');
+const WebSocket = require('ws');
 
 startDetector();
 const app = express();
@@ -23,17 +25,17 @@ const app = express();
 // ✅ Security headers
 app.use(helmet());
 
-// ✅ CORS restriction (only frontend domain allowed)
-const ALLOWED_DOMAIN = process.env.APP_STATE === 'developer' ? 'http://localhost:3000' :"https://portal.urbanpillar.info";
+// ✅ CORS restriction
+const ALLOWED_DOMAIN = process.env.APP_STATE === 'developer' ? 'http://localhost:3000' : "https://portal.urbanpillar.info";
 app.use(cors({
   origin: ALLOWED_DOMAIN,
   credentials: true
 }));
 
 // ✅ Global middleware
-app.use(ipBlocker);           // Block blacklisted IPs
-app.use(securityMiddleware);  // Check origin/referer
-app.use(logVisitor);          // Log visitor info
+app.use(ipBlocker);
+app.use(securityMiddleware);
+app.use(logVisitor);
 
 // ✅ Parsers & logging
 app.use(express.json({ limit: '1mb' }));
@@ -60,6 +62,27 @@ initKafka().catch(err => {
   logger.error('Kafka init failed', err);
 });
 
+// ✅ Create HTTP server
+const server = http.createServer(app);
+
+// ✅ Attach WebSocket server
+const wss = new WebSocket.Server({ server, path: "/ws" });
+
+wss.on("connection", (ws) => {
+  console.log("🔌 WebSocket client connected");
+
+  ws.on("message", (message) => {
+    console.log("📩 Received:", message.toString());
+  });
+
+  ws.on("close", () => {
+    console.log("❌ WebSocket client disconnected");
+  });
+
+  // Example: Send a test message
+  ws.send(JSON.stringify({ topic: "status", data: "Connected to UrbanPillar WS" }));
+});
+
 // ✅ Start server
 const port = process.env.PORT || 9500;
-app.listen(port, () => logger.info(`Server started on port ${port}`));
+server.listen(port, () => logger.info(`Server started on port ${port}`));
