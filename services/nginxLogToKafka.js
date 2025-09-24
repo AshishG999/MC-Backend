@@ -1,91 +1,86 @@
-const { Kafka } = require('kafkajs');
+// services/nginxLogToKafka.js
 const Tail = require('tail').Tail;
-const logger = require('../config/logger');
-const Project = require('../models/Project');
+const useragent = require('express-useragent');
+const geoip = require('geoip-lite');
 const VisitorLog = require('../models/VisitorLog');
+const Project = require('../models/Project');
+const { getProducer } = require('../config/kafka');
+const logger = require('../config/logger');
 
-const KAFKA_BROKERS = (process.env.KAFKA_BROKERS || 'localhost:9092').split(',');
-const kafka = new Kafka({ clientId: 'nginx-log-producer', brokers: KAFKA_BROKERS });
-const producer = kafka.producer();
+const LOG_FILE = '/var/log/nginx/kafka_access.log'; // your kafka log
 
-const NGINX_LOG_FILE = '/var/log/nginx/kafka_access.log'; // make sure this matches your Nginx config
+// Regex to match nginx kafka log line
+const logRegex = /^(\S+) - (\S+) \[([^\]]+)] "(.*?)" (\d+) (\d+) "(.*?)" "(.*?)"$/;
 
-async function startNginxLogProducer() {
-  try {
-    await producer.connect();
-    logger.info('Kafka producer connected for Nginx log.');
+async function startNginxLogTail() {
+  const tail = new Tail(LOG_FILE);
 
-    // Cache project domains to reduce DB queries
-    let projects = await Project.find({}, 'domain');
-    const projectDomains = projects.map(p => p.domain.toLowerCase());
+  tail.on('line', async (line) => {
+    try {
+      const match = line.match(logRegex);
+      if (!match) return;
 
-    const tail = new Tail(NGINX_LOG_FILE);
+      const [
+        _, remoteAddr, host, timeLocal, request,
+        status, bytesSent, referer, userAgentStr
+      ] = match;
 
-    tail.on('line', async (line) => {
-      try {
-        const regex = /(\S+) - (\S+) \[([^\]]+)] "(\S+) (\S+) (\S+)" (\d+) (\d+) "([^"]*)" "([^"]*)"/;
-        const match = line.match(regex);
-        if (!match) return;
+      const [method, path, protocol] = request.split(' ');
 
-        const [
-          _, remoteAddr, host, timeLocal, method, path, protocol,
-          status, bytesSent, referer, userAgent
-        ] = match;
+      // Determine project domain
+      const project = await Project.findOne({ domain: host });
+      const projectDomain = project ? project.domain : host;
 
-        const domain = host.toLowerCase();
+      // Parse user-agent
+      const ua = useragent.parse(userAgentStr);
 
-        // Only log if domain is a project in DB
-        if (!projectDomains.includes(domain)) return;
+      // Geo lookup
+      const geo = geoip.lookup(remoteAddr) || {};
 
-        const logData = {
-          projectDomain: domain,
-          ip: remoteAddr,
-          path,
-          method,
-          status: parseInt(status),
-          bytesSent: parseInt(bytesSent),
-          referer,
-          userAgent,
-          timestamp: new Date().toISOString(),
-        };
+      const logData = {
+        projectDomain,
+        ip: remoteAddr,
+        browser: ua.browser,
+        os: ua.os,
+        device: ua.platform,
+        country: geo.country || '',
+        region: geo.region || '',
+        city: geo.city || '',
+        latitude: geo.ll ? geo.ll[0] : null,
+        longitude: geo.ll ? geo.ll[1] : null,
+        area: geo.metro ? `Metro-${geo.metro}` : '',
+        path,
+        method,
+        status: parseInt(status),
+        referer,
+        userAgent: userAgentStr,
+        timestamp: new Date(),
+      };
 
-        // Save to MongoDB
-        const visitorLog = new VisitorLog({
-          projectDomain: logData.projectDomain,
-          ip: logData.ip,
-          browser: logData.userAgent, // you can parse with useragent if needed
-          os: '',
-          device: '',
-          country: '',
-          region: '',
-          city: '',
-          latitude: null,
-          longitude: null,
-          area: '',
-          createdAt: new Date(),
-        });
-        await visitorLog.save();
+      // Save to MongoDB
+      const log = new VisitorLog(logData);
+      await log.save();
 
-        // Send to Kafka
-        await producer.send({
-          topic: 'visits',
-          messages: [{ key: domain, value: JSON.stringify(logData) }],
-        });
+      // Send to Kafka
+      const producer = getProducer();
+      await producer.send({
+        topic: 'visits',
+        messages: [
+          { key: projectDomain, value: JSON.stringify(logData) },
+        ],
+      });
 
-        logger.info(`Visitor logged & sent to Kafka for project: ${domain}`);
+      logger.info(`Visitor log saved & sent to Kafka: ${projectDomain} - ${remoteAddr}`);
+    } catch (err) {
+      logger.error(`Error processing nginx log line: ${err.message}`);
+    }
+  });
 
-      } catch (err) {
-        logger.error(`Failed to process Nginx log line: ${err.message}`);
-      }
-    });
+  tail.on('error', (err) => {
+    logger.error(`Tail error: ${err}`);
+  });
 
-    tail.on('error', (err) => logger.error(`Tail error: ${err.message}`));
-
-    logger.info(`Tailing Nginx log file: ${NGINX_LOG_FILE}`);
-  } catch (err) {
-    logger.error(`Kafka producer connection failed: ${err.message}`);
-    process.exit(1);
-  }
+  logger.info('Nginx log tail started...');
 }
 
-module.exports = { startNginxLogProducer };
+module.exports = { startNginxLogTail };
