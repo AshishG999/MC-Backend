@@ -18,6 +18,7 @@ const ipBlocker = require('./middleware/ipBlocker');
 const startDetector = require('./services/suspiciousTrafficDetector');
 const http = require('http');
 const WebSocket = require('ws');
+const { startKafkaWsServer } = require('./services/kafkaWsBridge');
 
 startDetector();
 const app = express();
@@ -66,22 +67,8 @@ initKafka().catch(err => {
 const server = http.createServer(app);
 
 // ✅ Attach WebSocket server
-const wss = new WebSocket.Server({ server, path: "/ws" });
-
-wss.on("connection", (ws) => {
-  console.log("🔌 WebSocket client connected");
-
-  ws.on("message", (message) => {
-    console.log("📩 Received:", message.toString());
-  });
-
-  ws.on("close", () => {
-    console.log("❌ WebSocket client disconnected");
-  });
-
-  // Example: Send a test message
-  ws.send(JSON.stringify({ topic: "status", data: "Connected to UrbanPillar WS" }));
-});
+// const wss = new WebSocket.Server({ server, path: "/ws" });
+startKafkaWsServer(server).catch(err => logger.error("WS Server Error:", err));
 
 // ✅ Start server
 const port = process.env.PORT || 9500;
