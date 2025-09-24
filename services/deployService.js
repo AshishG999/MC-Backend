@@ -1,10 +1,11 @@
 const fs = require('fs');
 const path = require('path');
-const { exec } = require('child_process');
+const { exec, execSync } = require('child_process');
 const { Octokit } = require('@octokit/rest');
-const githubCache = require('./githubCache');
 const logger = require('../config/logger');
+const githubCache = require('./githubCache');
 const Project = require('../models/Project');
+const { publishGitHubStatus } = require('./githubPublisher');
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_USER = process.env.GITHUB_USER;
@@ -26,14 +27,13 @@ function sanitizeRepoName(domain) {
  */
 async function createGithubRepo(domain) {
   const repoName = sanitizeRepoName(domain);
-
   try {
     const { data } = await octokit.repos.createForAuthenticatedUser({
       name: repoName,
       private: true,
       auto_init: false,
     });
-    await Project.findOneAndUpdate({domain},{githubRepo: `https://github.com/${GITHUB_USER}/${repoName}.git`})
+    await Project.findOneAndUpdate({ domain }, { githubRepo: `https://github.com/${GITHUB_USER}/${repoName}.git` });
     logger.info(`GitHub repo created: ${repoName}`);
     return data.clone_url;
   } catch (err) {
@@ -46,32 +46,57 @@ async function createGithubRepo(domain) {
 }
 
 /**
- * Initialize local project folder and write index.html
+ * Clone repo async
  */
-function initProjectFolder(projectName) {
-  const projectPath = path.join(PROJECTS_DIR, projectName);
-  if (!fs.existsSync(projectPath)) fs.mkdirSync(projectPath, { recursive: true });
+function cloneRepo(repoUrl, projectPath) {
+  return new Promise((resolve, reject) => {
+    exec(`git clone ${repoUrl} ${projectPath}`, (err, stdout, stderr) => {
+      if (err) {
+        logger.error(`Failed to clone repo: ${stderr}`);
+        return reject(err);
+      }
+      logger.info(`Cloned template repo into ${projectPath}`);
+      resolve(true);
+    });
+  });
+}
 
-  const indexHtml = `
-  <!DOCTYPE html>
-  <html lang="en">
-  <head>
-      <meta charset="UTF-8">
-      <meta http-equiv="X-UA-Compatible" content="IE=edge">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>${projectName}</title>
-      <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  </head>
-  <body>
-      <div class="container mt-5">
-          <h1>Welcome to ${projectName}</h1>
-          <p>This is a basic Microsite deployed via the dashboard.</p>
-      </div>
-  </body>
-  </html>
-  `;
-  fs.writeFileSync(path.join(projectPath, 'index.html'), indexHtml.trim());
-  logger.info(`Initialized local project folder for ${projectName}`);
+/**
+ * Initialize project folder (optionally clone a template)
+ */
+async function initProjectFolder(projectName, templateRepoUrl = null) {
+  const projectPath = path.join(PROJECTS_DIR, projectName);
+
+  if (fs.existsSync(projectPath)) {
+    fs.rmSync(projectPath, { recursive: true, force: true });
+  }
+
+  fs.mkdirSync(projectPath, { recursive: true });
+
+  if (templateRepoUrl) {
+    await cloneRepo(templateRepoUrl, projectPath);
+  } else {
+    const indexHtml = `
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>${projectName}</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    </head>
+    <body>
+        <div class="container mt-5">
+            <h1>Welcome to ${projectName}</h1>
+            <p>This is a basic Microsite deployed via the dashboard.</p>
+        </div>
+    </body>
+    </html>
+    `;
+    fs.writeFileSync(path.join(projectPath, 'index.html'), indexHtml.trim());
+    logger.info(`Initialized default project folder for ${projectName}`);
+  }
 
   return projectPath;
 }
@@ -79,24 +104,6 @@ function initProjectFolder(projectName) {
 /**
  * Push local project to GitHub
  */
-async function deleteProject(project) {
-    const repoName = sanitizeRepoName(project.domain);
-    const projectPath = initProjectFolder(repoName);
-
-     const cmds = [
-      `rm -R ${projectPath}`,
-    ].join(' && ');
-
-    exec(cmds, (err, stdout, stderr) => {
-      if (err) {
-        logger.error(`delete ${projectPath} error: ${stderr}`);
-        return reject(err);
-      }
-      logger.info(`delete ${projectPath}: ${stdout}`);
-      resolve(true);
-    });
-}
-
 async function pushToGithub(projectPath, repoUrl) {
   return new Promise((resolve, reject) => {
     const tokenRepoUrl = repoUrl.replace(
@@ -127,7 +134,7 @@ async function pushToGithub(projectPath, repoUrl) {
 }
 
 /**
- * Create Nginx config and install SSL via Certbot
+ * Create Nginx config + SSL
  */
 function createNginxConfig(domain, projectName) {
   const configContent = `
@@ -151,21 +158,17 @@ server {
   const enabledPath = path.join(NGINX_SITES_ENABLED, projectName);
   if (!fs.existsSync(enabledPath)) fs.symlinkSync(configPath, enabledPath);
 
-  // Reload Nginx
   exec('nginx -s reload', (err, stdout, stderr) => {
     if (err) {
       logger.error(`Nginx reload error: ${stderr}`);
     } else {
       logger.info(`Nginx reloaded for ${domain}`);
-
-      // Run Certbot to install SSL certificate
       const certbotCmd = `certbot --nginx -d ${domain} --non-interactive --agree-tos -m admin@${domain} --redirect`;
       exec(certbotCmd, (errCert, stdoutCert, stderrCert) => {
         if (errCert) {
           logger.error(`Certbot SSL install error: ${stderrCert}`);
         } else {
-          logger.info(`Certbot SSL installed for ${domain}: ${stdoutCert}`);
-          // Test auto-renewal
+          logger.info(`Certbot SSL installed for ${domain}`);
           exec('certbot renew --dry-run', (errRenew, stdoutRenew, stderrRenew) => {
             if (errRenew) {
               logger.error(`Certbot renewal test failed: ${stderrRenew}`);
@@ -204,20 +207,43 @@ async function updateCacheForProject(project) {
 }
 
 /**
+ * Delete project folder
+ */
+async function deleteProject(project) {
+  return new Promise((resolve, reject) => {
+    const repoName = sanitizeRepoName(project.domain);
+    const projectPath = path.join(PROJECTS_DIR, repoName);
+
+    fs.rm(projectPath, { recursive: true, force: true }, (err) => {
+      if (err) {
+        logger.error(`Failed to delete project folder ${projectPath}: ${err.message}`);
+        return reject(err);
+      }
+      logger.info(`Project folder deleted: ${projectPath}`);
+      resolve(true);
+    });
+  });
+}
+
+/**
  * Main deploy function
  */
-async function deployProject(project) {
+async function deployProject(project, templateRepoUrl = null) {
   try {
     const repoName = sanitizeRepoName(project.domain);
     const repoUrl = project.githubRepo || await createGithubRepo(project.domain);
-    const projectPath = initProjectFolder(repoName);
+    const projectPath = await initProjectFolder(repoName, templateRepoUrl);
     await pushToGithub(projectPath, repoUrl);
     await updateCacheForProject(project);
     createNginxConfig(project.domain, repoName);
+    await publishGitHubStatus(project);
     logger.info(`Deployment finished for ${project.domain}`);
   } catch (err) {
     logger.error(`Deployment failed for ${project.domain}: ${err.message}`);
   }
 }
 
-module.exports = { deployProject , deleteProject};
+module.exports = {
+  deployProject,
+  deleteProject
+};

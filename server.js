@@ -7,57 +7,59 @@ const { connectMongo } = require('./config/mongo');
 const { initKafka } = require('./config/kafka');
 const logger = require('./config/logger');
 const logVisitor = require('./middleware/logVisitor');
-
+const adminIPsRoutes = require("./routes/adminIPs");
 const projectsRoutes = require('./routes/projects');
 const leadsRoutes = require('./routes/leads');
 const domainEmailRoutes = require('./routes/domainEmails');
 const logsRoutes = require('./routes/logs');
 const webhookRoutes = require('./routes/webhooks');
+const securityMiddleware = require("./middleware/security");
+const ipBlocker = require('./middleware/ipBlocker');
+const startDetector = require('./services/suspiciousTrafficDetector');
 
+startDetector();
 const app = express();
-app.use(helmet());
-const allowedOrigins = ['https://portal.urbanpillar.info'];
 
+// ✅ Security headers
+app.use(helmet());
+
+// ✅ CORS restriction (only frontend domain allowed)
+const ALLOWED_DOMAIN = "https://portal.urbanpillar.info";
 app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
+  origin: ALLOWED_DOMAIN,
   credentials: true
 }));
+
+// ✅ Global middlewares
+app.use(ipBlocker);           // Block blacklisted IPs
+app.use(securityMiddleware);  // Check origin/referer
+app.use(logVisitor);          // Log visitor info
+
+// ✅ Parsers & logging
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan('combined'));
 
+// ✅ Routes
 app.use('/webhooks', webhookRoutes);
+app.use('/api/v1/projects', projectsRoutes);
+app.use('/api/v1/leads', leadsRoutes);
+app.use('/api/v1/domain-emails', domainEmailRoutes);
+app.use('/api/v1/logs', logsRoutes);
+app.use("/api/v1/admin/ips", adminIPsRoutes);
 
-app.use(logVisitor); 
-
-// Connect to MongoDB
-connectMongo().catch(err => {
-logger.error('MongoDB connection failed', err);
-process.exit(1);
-});
-
-
-// Initialize Kafka
-initKafka().catch(err => {
-logger.error('Kafka init failed', err);
-});
-
-
-// Routes
-app.use('/v1/projects', projectsRoutes);
-app.use('/v1/leads', leadsRoutes);
-app.use('/v1/domain-emails', domainEmailRoutes);
-app.use('/v1/logs', logsRoutes);
-
-
+// ✅ Root endpoint
 app.get('/', (req, res) => res.json({ ok: true, service: 'microsite-backend' }));
 
+// ✅ Database + Kafka init
+connectMongo().catch(err => {
+  logger.error('MongoDB connection failed', err);
+  process.exit(1);
+});
+initKafka().catch(err => {
+  logger.error('Kafka init failed', err);
+});
 
+// ✅ Start server
 const port = process.env.PORT || 9500;
-app.listen(port, '127.0.0.1', () => logger.info(`Server started on port ${port}`));
+app.listen(port, () => logger.info(`Server started on port ${port}`));

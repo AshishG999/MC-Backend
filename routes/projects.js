@@ -23,7 +23,7 @@ router.post('/',
   sanitizeInput(['projectName']),
   async (req, res) => {
     try {
-      const { domain, projectName, githubRepo, city, status } = req.body;
+      const { domain, projectName, githubRepo, city, status, templateRepo  } = req.body;
 
       // Check for duplicates
       const existing = await Project.findOne({ domain });
@@ -43,7 +43,7 @@ router.post('/',
 
       // Trigger deployment in background
       setImmediate(() => {
-        deployProject(savedProject);
+        deployProject(savedProject, templateRepo);
       });
 
       return res.status(201).json({
@@ -138,14 +138,14 @@ router.delete('/:id', async (req, res) => {
     if (!project) return res.status(404).json({ message: 'Project not found' });
 
     // 1. Delete GitHub repo (optional, if intended)
-    try {
-      await octokit.repos.delete({
-        owner: GITHUB_USER,
-        repo: sanitizeRepoName(project.domain)
-      });
-    } catch (e) {
-      console.warn('GitHub repo not deleted:', e.message);
-    }
+    // try {
+    //   await octokit.repos.delete({
+    //     owner: GITHUB_USER,
+    //     repo: sanitizeRepoName(project.domain)
+    //   });
+    // } catch (e) {
+    //   console.warn('GitHub repo not deleted:', e.message);
+    // }
 
     // 2. Delete deployed project (call your deployService cleanup)
     await deleteProject(project);
