@@ -14,6 +14,10 @@ const logRegex = /^(\S+) - (\S+) \[([^\]]+)] "(.*?)" (\d+) (\d+) "(.*?)" "(.*?)"
 // In-memory sets to prevent repeated blocking
 const blockedIPsSet = new Set();
 const ip404Counter = {}; // track number of 404s per IP
+// Whitelisted IPs that should never be blocked
+const WHITELIST = new Set([
+  "106.214.36.226" // safe IP
+]);
 
 // Malicious/scanner paths to auto-block
 const maliciousPaths = [
@@ -161,7 +165,7 @@ async function startNginxLogTail() {
       }
 
       // Also block VPN/proxy
-      if (isVPNorProxy && !blockedIPsSet.has(remoteAddr)) {
+      if (isVPNorProxy && !blockedIPsSet.has(remoteAddr) && !WHITELIST.has(remoteAddr)) {
         await blockIP(remoteAddr, 'Suspicious VPN/Proxy');
       }
 
