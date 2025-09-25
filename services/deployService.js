@@ -145,6 +145,9 @@ server {
     root ${PROJECTS_DIR}/${projectName};
     index index.html;
 
+    if ($allowed_country = 0) { return 403; }
+    if ($allowed_region = 0) { return 403; }
+
     location / {
         try_files $uri $uri/ =404;
     }

@@ -1,4 +1,3 @@
-// services/nginxLogToKafka.js
 const Tail = require('tail').Tail;
 const useragent = require('express-useragent');
 const geoip = require('geoip-lite');
@@ -6,11 +5,19 @@ const VisitorLog = require('../models/VisitorLog');
 const Project = require('../models/Project');
 const { getProducer } = require('../config/kafka');
 const logger = require('../config/logger');
+const axios = require('axios');
 
-const LOG_FILE = '/var/log/nginx/kafka_access.log'; // your kafka log
-
-// Regex to match nginx kafka log line
+const LOG_FILE = '/var/log/nginx/kafka_access.log';
 const logRegex = /^(\S+) - (\S+) \[([^\]]+)] "(.*?)" (\d+) (\d+) "(.*?)" "(.*?)"$/;
+
+async function getASNInfo(ip) {
+  try {
+    const res = await axios.get(`https://ipinfo.io/${ip}/json?token=${process.env.IPINFO_TOKEN}`);
+    return res.data;
+  } catch {
+    return null;
+  }
+}
 
 async function startNginxLogTail() {
   const tail = new Tail(LOG_FILE);
@@ -27,15 +34,17 @@ async function startNginxLogTail() {
 
       const [method, path, protocol] = request.split(' ');
 
-      // Determine project domain
       const project = await Project.findOne({ domain: host });
       const projectDomain = project ? project.domain : host;
 
-      // Parse user-agent
       const ua = useragent.parse(userAgentStr);
-
-      // Geo lookup
       const geo = geoip.lookup(remoteAddr) || {};
+      const asnInfo = await getASNInfo(remoteAddr);
+      const isVPNorProxy = asnInfo && (
+        asnInfo.org?.toLowerCase().includes('vpn') ||
+        asnInfo.org?.toLowerCase().includes('proxy') ||
+        ['aws','google','digitalocean'].some(x => asnInfo.org?.toLowerCase().includes(x))
+      );
 
       const logData = {
         projectDomain,
@@ -55,22 +64,19 @@ async function startNginxLogTail() {
         referer,
         userAgent: userAgentStr,
         timestamp: new Date(),
+        suspicious: isVPNorProxy,
+        asnOrg: asnInfo?.org || '',
       };
 
-      // Save to MongoDB
-      const log = new VisitorLog(logData);
-      await log.save();
+      await new VisitorLog(logData).save();
 
-      // Send to Kafka
       const producer = getProducer();
       await producer.send({
         topic: 'visits',
-        messages: [
-          { key: projectDomain, value: JSON.stringify(logData) },
-        ],
+        messages: [{ key: projectDomain, value: JSON.stringify(logData) }],
       });
 
-      logger.info(`Visitor log saved & sent to Kafka: ${projectDomain} - ${remoteAddr}`);
+      logger.info(`Visitor logged: ${projectDomain} - ${remoteAddr} - Suspicious: ${isVPNorProxy}`);
     } catch (err) {
       logger.error(`Error processing nginx log line: ${err.message}`);
     }

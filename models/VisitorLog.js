@@ -12,6 +12,13 @@ const VisitorLogSchema = new mongoose.Schema({
   latitude: Number,
   longitude: Number,
   area: String,
+  path: String,
+  method: String,
+  status: Number,
+  referer: String,
+  userAgent: String,
+  suspicious: { type: Boolean, default: false },
+  asnOrg: { type: String, default: '' },
   createdAt: { type: Date, default: Date.now },
 });
 
