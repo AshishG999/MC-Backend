@@ -1,4 +1,4 @@
-const Tail = require('tail').Tail;
+const { Tail } = require('tail');
 const useragent = require('express-useragent');
 const VisitorLog = require('../models/VisitorLog');
 const Project = require('../models/Project');
@@ -34,7 +34,8 @@ async function startNginxLogTail() {
         status, bytesSent, referer, userAgentStr
       ] = match;
 
-      const [method, path, protocol] = request.split(' ');
+      const [method, pathRaw, protocol] = request.split(' ');
+      const path = decodeURIComponent(pathRaw); // <-- decode URL path
 
       const project = await Project.findOne({ domain: host });
       const projectDomain = project ? project.domain : host;
@@ -76,9 +77,10 @@ async function startNginxLogTail() {
         timestamp: new Date(),
         suspicious: isVPNorProxy,
         asnOrg: asnInfo?.org || '',
+        partial: parseInt(status) === 206, // <-- mark partial content
       };
 
-      // Save to Mongo
+      // Save to MongoDB
       await new VisitorLog(logData).save();
 
       // Push to Kafka
@@ -89,7 +91,7 @@ async function startNginxLogTail() {
       });
 
       logger.info(
-        `Visitor logged: ${projectDomain} - ${remoteAddr} - Suspicious: ${isVPNorProxy}`
+        `Visitor logged: ${projectDomain} - ${remoteAddr} - Suspicious: ${isVPNorProxy} - Partial: ${logData.partial}`
       );
     } catch (err) {
       logger.error(`Error processing nginx log line: ${err.message}`);
