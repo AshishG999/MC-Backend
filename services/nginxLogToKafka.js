@@ -2,7 +2,7 @@ const { Tail } = require('tail');
 const useragent = require('express-useragent');
 const VisitorLog = require('../models/VisitorLog');
 const Project = require('../models/Project');
-const BlockedIP = require('../models/BlockedIP'); // 👈 BlockedIP model
+const BlockedIP = require('../models/BlockedIP');
 const { getProducer } = require('../config/kafka');
 const logger = require('../config/logger');
 const axios = require('axios');
@@ -11,9 +11,24 @@ const { exec } = require('child_process');
 const LOG_FILE = '/var/log/nginx/kafka_access.log';
 const logRegex = /^(\S+) - (\S+) \[([^\]]+)] "(.*?)" (\d+) (\d+) "(.*?)" "(.*?)"$/;
 
-// In-memory blocked IPs to prevent repeated blocking
-const blockedIPs = new Set();
+// In-memory sets to prevent repeated blocking
+const blockedIPsSet = new Set();
+const ip404Counter = {}; // track number of 404s per IP
 
+// Malicious/scanner paths to auto-block
+const maliciousPaths = [
+  '/wp-admin/setup-config.php',
+  '/phpmyadmin/',
+  '/SQLiteManager/',
+  '/test/sqlite/',
+  '/HNAP1/',
+  '/main.php',
+  '/SQLite/main.php',
+  '/sqlite/main.php',
+  '/sqlitemanager/main.php'
+];
+
+// Get ASN info from ipinfo.io
 async function getASNInfo(ip) {
   try {
     const res = await axios.get(
@@ -25,30 +40,30 @@ async function getASNInfo(ip) {
   }
 }
 
-async function blockIP(ip, reason = "Suspicious activity") {
-  try {
-    // Check if already in Mongo
-    const exists = await BlockedIP.findOne({ ip });
-    if (!exists) {
-      await new BlockedIP({ ip, reason }).save();
-    }
+// Block IP function: Mongo + iptables + in-memory set
+async function blockIP(ip, reason = 'Suspicious activity') {
+  if (blockedIPsSet.has(ip)) return;
 
-    // Block in iptables if not already blocked in-memory
-    if (!blockedIPs.has(ip)) {
-      blockedIPs.add(ip);
-      exec(`sudo iptables -A INPUT -s ${ip} -j DROP`, (err) => {
-        if (err) logger.error(`Failed to block IP ${ip}: ${err.message}`);
-        else logger.warn(`Blocked IP: ${ip} - Reason: ${reason}`);
-      });
-    }
+  try {
+    blockedIPsSet.add(ip);
+
+    // Save to MongoDB
+    await BlockedIP.create({ ip, reason });
+
+    // Block at server level
+    exec(`sudo iptables -A INPUT -s ${ip} -j DROP`, (err) => {
+      if (err) logger.error(`Failed to block IP ${ip}: ${err.message}`);
+      else logger.warn(`Blocked IP: ${ip} - Reason: ${reason}`);
+    });
   } catch (err) {
     logger.error(`Error blocking IP ${ip}: ${err.message}`);
   }
 }
 
+// Tail nginx logs
 async function startNginxLogTail() {
   const tail = new Tail(LOG_FILE);
-  console.log("Watching nginx log file:", LOG_FILE);
+  logger.info("Watching nginx log file: " + LOG_FILE);
 
   tail.on('line', async (line) => {
     try {
@@ -73,6 +88,7 @@ async function startNginxLogTail() {
       const latitude = loc.length ? parseFloat(loc[0]) : null;
       const longitude = loc.length ? parseFloat(loc[1]) : null;
 
+      // Suspicious VPN / Proxy detection
       const isVPNorProxy =
         asnInfo &&
         (
@@ -83,6 +99,7 @@ async function startNginxLogTail() {
           )
         );
 
+      // Log data
       const logData = {
         projectDomain,
         ip: remoteAddr,
@@ -120,9 +137,32 @@ async function startNginxLogTail() {
         `Visitor logged: ${projectDomain} - ${remoteAddr} - Suspicious: ${isVPNorProxy} - Partial: ${logData.partial}`
       );
 
-      // Block suspicious IPs
-      if (isVPNorProxy) {
-        await blockIP(remoteAddr, "Suspicious / VPN / Proxy");
+      // === AUTOMATIC BLOCKING LOGIC ===
+
+      // Increment 404 counter
+      if (parseInt(status) === 404) {
+        ip404Counter[remoteAddr] = (ip404Counter[remoteAddr] || 0) + 1;
+      }
+
+      // Check for malicious path or too many 404s
+      const isMaliciousPath = maliciousPaths.some(p =>
+        path.toLowerCase().includes(p.toLowerCase())
+      );
+
+      if ((isMaliciousPath || (ip404Counter[remoteAddr] >= 5)) &&
+          !blockedIPsSet.has(remoteAddr)) {
+        const reason = isMaliciousPath
+          ? `Malicious path scan (${path})`
+          : `Multiple 404 requests (${ip404Counter[remoteAddr]})`;
+        await blockIP(remoteAddr, reason);
+
+        // reset counter after blocking
+        ip404Counter[remoteAddr] = 0;
+      }
+
+      // Also block VPN/proxy
+      if (isVPNorProxy && !blockedIPsSet.has(remoteAddr)) {
+        await blockIP(remoteAddr, 'Suspicious VPN/Proxy');
       }
 
     } catch (err) {
@@ -134,7 +174,7 @@ async function startNginxLogTail() {
     logger.error(`Tail error: ${err}`);
   });
 
-  logger.info('Nginx log tail started with automatic IP blocking...');
+  logger.info('Nginx log tail started with automatic IP blocking.');
 }
 
 module.exports = { startNginxLogTail };
