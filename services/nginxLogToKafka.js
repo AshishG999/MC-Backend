@@ -2,12 +2,17 @@ const { Tail } = require('tail');
 const useragent = require('express-useragent');
 const VisitorLog = require('../models/VisitorLog');
 const Project = require('../models/Project');
+const BlockedIP = require('../models/BlockedIP'); // 👈 BlockedIP model
 const { getProducer } = require('../config/kafka');
 const logger = require('../config/logger');
 const axios = require('axios');
+const { exec } = require('child_process');
 
 const LOG_FILE = '/var/log/nginx/kafka_access.log';
 const logRegex = /^(\S+) - (\S+) \[([^\]]+)] "(.*?)" (\d+) (\d+) "(.*?)" "(.*?)"$/;
+
+// In-memory blocked IPs to prevent repeated blocking
+const blockedIPs = new Set();
 
 async function getASNInfo(ip) {
   try {
@@ -17,6 +22,27 @@ async function getASNInfo(ip) {
     return res.data;
   } catch {
     return null;
+  }
+}
+
+async function blockIP(ip, reason = "Suspicious activity") {
+  try {
+    // Check if already in Mongo
+    const exists = await BlockedIP.findOne({ ip });
+    if (!exists) {
+      await new BlockedIP({ ip, reason }).save();
+    }
+
+    // Block in iptables if not already blocked in-memory
+    if (!blockedIPs.has(ip)) {
+      blockedIPs.add(ip);
+      exec(`sudo iptables -A INPUT -s ${ip} -j DROP`, (err) => {
+        if (err) logger.error(`Failed to block IP ${ip}: ${err.message}`);
+        else logger.warn(`Blocked IP: ${ip} - Reason: ${reason}`);
+      });
+    }
+  } catch (err) {
+    logger.error(`Error blocking IP ${ip}: ${err.message}`);
   }
 }
 
@@ -35,7 +61,7 @@ async function startNginxLogTail() {
       ] = match;
 
       const [method, pathRaw, protocol] = request.split(' ');
-      const path = decodeURIComponent(pathRaw); // <-- decode URL path
+      const path = decodeURIComponent(pathRaw);
 
       const project = await Project.findOne({ domain: host });
       const projectDomain = project ? project.domain : host;
@@ -77,10 +103,10 @@ async function startNginxLogTail() {
         timestamp: new Date(),
         suspicious: isVPNorProxy,
         asnOrg: asnInfo?.org || '',
-        partial: parseInt(status) === 206, // <-- mark partial content
+        partial: parseInt(status) === 206,
       };
 
-      // Save to MongoDB
+      // Save visitor log
       await new VisitorLog(logData).save();
 
       // Push to Kafka
@@ -93,6 +119,12 @@ async function startNginxLogTail() {
       logger.info(
         `Visitor logged: ${projectDomain} - ${remoteAddr} - Suspicious: ${isVPNorProxy} - Partial: ${logData.partial}`
       );
+
+      // Block suspicious IPs
+      if (isVPNorProxy) {
+        await blockIP(remoteAddr, "Suspicious / VPN / Proxy");
+      }
+
     } catch (err) {
       logger.error(`Error processing nginx log line: ${err.message}`);
     }
@@ -102,7 +134,7 @@ async function startNginxLogTail() {
     logger.error(`Tail error: ${err}`);
   });
 
-  logger.info('Nginx log tail started...');
+  logger.info('Nginx log tail started with automatic IP blocking...');
 }
 
 module.exports = { startNginxLogTail };
