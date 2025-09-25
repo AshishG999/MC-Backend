@@ -1,6 +1,5 @@
 const Tail = require('tail').Tail;
 const useragent = require('express-useragent');
-const geoip = require('geoip-lite');
 const VisitorLog = require('../models/VisitorLog');
 const Project = require('../models/Project');
 const { getProducer } = require('../config/kafka');
@@ -12,7 +11,9 @@ const logRegex = /^(\S+) - (\S+) \[([^\]]+)] "(.*?)" (\d+) (\d+) "(.*?)" "(.*?)"
 
 async function getASNInfo(ip) {
   try {
-    const res = await axios.get(`https://ipinfo.io/${ip}/json?token=${process.env.IPINFO_TOKEN}`);
+    const res = await axios.get(
+      `https://ipinfo.io/${ip}/json?token=${process.env.IPINFO_TOKEN}`
+    );
     return res.data;
   } catch {
     return null;
@@ -21,6 +22,7 @@ async function getASNInfo(ip) {
 
 async function startNginxLogTail() {
   const tail = new Tail(LOG_FILE);
+  console.log("Watching nginx log file:", LOG_FILE);
 
   tail.on('line', async (line) => {
     try {
@@ -38,13 +40,21 @@ async function startNginxLogTail() {
       const projectDomain = project ? project.domain : host;
 
       const ua = useragent.parse(userAgentStr);
-      const geo = geoip.lookup(remoteAddr) || {};
       const asnInfo = await getASNInfo(remoteAddr);
-      const isVPNorProxy = asnInfo && (
-        asnInfo.org?.toLowerCase().includes('vpn') ||
-        asnInfo.org?.toLowerCase().includes('proxy') ||
-        ['aws','google','digitalocean'].some(x => asnInfo.org?.toLowerCase().includes(x))
-      );
+
+      const loc = asnInfo?.loc ? asnInfo.loc.split(',') : [];
+      const latitude = loc.length ? parseFloat(loc[0]) : null;
+      const longitude = loc.length ? parseFloat(loc[1]) : null;
+
+      const isVPNorProxy =
+        asnInfo &&
+        (
+          asnInfo.org?.toLowerCase().includes('vpn') ||
+          asnInfo.org?.toLowerCase().includes('proxy') ||
+          ['aws', 'google', 'digitalocean'].some(x =>
+            asnInfo.org?.toLowerCase().includes(x)
+          )
+        );
 
       const logData = {
         projectDomain,
@@ -52,12 +62,12 @@ async function startNginxLogTail() {
         browser: ua.browser,
         os: ua.os,
         device: ua.platform,
-        country: geo.country || '',
-        region: geo.region || '',
-        city: geo.city || '',
-        latitude: geo.ll ? geo.ll[0] : null,
-        longitude: geo.ll ? geo.ll[1] : null,
-        area: geo.metro ? `Metro-${geo.metro}` : '',
+        country: asnInfo?.country || '',
+        region: asnInfo?.region || '',
+        city: asnInfo?.city || '',
+        latitude,
+        longitude,
+        area: asnInfo?.postal ? `Postal-${asnInfo.postal}` : '',
         path,
         method,
         status: parseInt(status),
@@ -68,15 +78,19 @@ async function startNginxLogTail() {
         asnOrg: asnInfo?.org || '',
       };
 
+      // Save to Mongo
       await new VisitorLog(logData).save();
 
+      // Push to Kafka
       const producer = getProducer();
       await producer.send({
         topic: 'visits',
         messages: [{ key: projectDomain, value: JSON.stringify(logData) }],
       });
 
-      logger.info(`Visitor logged: ${projectDomain} - ${remoteAddr} - Suspicious: ${isVPNorProxy}`);
+      logger.info(
+        `Visitor logged: ${projectDomain} - ${remoteAddr} - Suspicious: ${isVPNorProxy}`
+      );
     } catch (err) {
       logger.error(`Error processing nginx log line: ${err.message}`);
     }

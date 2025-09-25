@@ -1,8 +1,7 @@
 const mongoose = require('mongoose');
 
 const VisitorLogSchema = new mongoose.Schema({
-  projectDomain: { type: String, required: true },
-  ip: { type: String, required: true },
+  projectDomain: String,
   browser: String,
   os: String,
   device: String,
@@ -17,8 +16,9 @@ const VisitorLogSchema = new mongoose.Schema({
   status: Number,
   referer: String,
   userAgent: String,
+  timestamp: Date,
+  asnOrg: String,
   suspicious: { type: Boolean, default: false },
-  asnOrg: { type: String, default: '' },
   createdAt: { type: Date, default: Date.now },
 });
 
