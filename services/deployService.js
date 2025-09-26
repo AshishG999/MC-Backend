@@ -1,11 +1,12 @@
 const fs = require('fs');
 const path = require('path');
-const { exec, execSync } = require('child_process');
+const { spawn } = require('child_process');
 const { Octokit } = require('@octokit/rest');
 const logger = require('../config/logger');
 const githubCache = require('./githubCache');
 const Project = require('../models/Project');
 const { publishGitHubStatus } = require('./githubPublisher');
+const { getProducer } = require('../config/kafka');
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_USER = process.env.GITHUB_USER;
@@ -14,12 +15,50 @@ const NGINX_SITES_AVAILABLE = '/etc/nginx/sites-available';
 const NGINX_SITES_ENABLED = '/etc/nginx/sites-enabled';
 
 const octokit = new Octokit({ auth: GITHUB_TOKEN });
+const producer = getProducer();
+
+/**
+ * Helper: Send Kafka deployment status
+ */
+async function streamStatus(domain, message, type = 'info') {
+  const payload = {
+    domain,
+    timestamp: new Date().toISOString(),
+    type, // 'info' or 'error'
+    message
+  };
+  try {
+    await producer.send({
+      topic: 'deployments',
+      messages: [{ value: JSON.stringify(payload) }],
+    });
+  } catch (err) {
+    console.error(`Failed to send Kafka message: ${err.message}`);
+  }
+}
 
 /**
  * Sanitize domain to use as GitHub repo name
  */
 function sanitizeRepoName(domain) {
   return domain.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+}
+
+/**
+ * Execute shell command and stream stdout/stderr to Kafka
+ */
+function runCommand(domain, command, args = [], options = {}) {
+  return new Promise((resolve, reject) => {
+    const cmd = spawn(command, args, { shell: true, ...options });
+
+    cmd.stdout.on('data', data => streamStatus(domain, data.toString(), 'info'));
+    cmd.stderr.on('data', data => streamStatus(domain, data.toString(), 'error'));
+
+    cmd.on('close', code => {
+      if (code === 0) resolve(true);
+      else reject(new Error(`${command} exited with code ${code}`));
+    });
+  });
 }
 
 /**
@@ -34,85 +73,64 @@ async function createGithubRepo(domain) {
       auto_init: false,
     });
     await Project.findOneAndUpdate({ domain }, { githubRepo: `https://github.com/${GITHUB_USER}/${repoName}.git` });
-    logger.info(`GitHub repo created: ${repoName}`);
-    return data.clone_url;
+    await streamStatus(domain, `GitHub repo created: ${repoName}`);
+    return { status: 'new', url: data.clone_url };
   } catch (err) {
     if (err.status === 422) {
-      logger.info(`GitHub repo already exists: ${repoName}`);
-      return `https://github.com/${GITHUB_USER}/${repoName}.git`;
+      await Project.findOneAndUpdate({ domain }, { githubRepo: `https://github.com/${GITHUB_USER}/${repoName}.git` });
+      await streamStatus(domain, `GitHub repo already exists: ${repoName}`);
+      return { status: 'old', url: `https://github.com/${GITHUB_USER}/${repoName}.git` };
     }
+    await streamStatus(domain, `GitHub repo creation failed: ${err.message}`, 'error');
     throw err;
   }
 }
 
 /**
- * Clone repo async
+ * Initialize project folder (clone repo if exists, otherwise create static index.html)
  */
-function cloneRepo(repoUrl, projectPath) {
-  return new Promise((resolve, reject) => {
-    exec(`git clone ${repoUrl} ${projectPath}`, (err, stdout, stderr) => {
-      if (err) {
-        logger.error(`Failed to clone repo: ${stderr}`);
-        return reject(err);
-      }
-      logger.info(`Cloned template repo into ${projectPath}`);
-      resolve(true);
-    });
-  });
-}
-
-/**
- * Initialize project folder (optionally clone a template)
- */
-async function initProjectFolder(projectName, domain = null) {
+async function initProjectFolder(projectName, domain) {
   const projectPath = path.join(PROJECTS_DIR, projectName);
 
-  if (fs.existsSync(projectPath)) {
-    fs.rmSync(projectPath, { recursive: true, force: true });
-  }
-
+  if (fs.existsSync(projectPath)) fs.rmSync(projectPath, { recursive: true, force: true });
   fs.mkdirSync(projectPath, { recursive: true });
-  let templateRepoUrl = `https://${GITHUB_TOKEN}@github.com/${GITHUB_USER}/${sanitizeRepoName(domain)}.git`
-  if (templateRepoUrl) {
-    await cloneRepo(templateRepoUrl, projectPath);
-  } else {
+
+  const repoUrl = `https://${GITHUB_TOKEN}@github.com/${GITHUB_USER}/${sanitizeRepoName(domain)}.git`;
+
+  try {
+    await runCommand(domain, 'git', ['clone', repoUrl, projectPath]);
+    await streamStatus(domain, `Cloned repository into ${projectPath}`);
+  } catch (err) {
+    await streamStatus(domain, `Repo not found, creating default index.html`, 'info');
     const indexHtml = `
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta http-equiv="X-UA-Compatible" content="IE=edge">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>${projectName}</title>
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    </head>
-    <body>
-        <div class="container mt-5">
-            <h1>Welcome to ${projectName}</h1>
-            <p>This is a basic Microsite deployed via the dashboard.</p>
-        </div>
-    </body>
-    </html>
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>${projectName}</title>
+      </head>
+      <body>
+          <h1>Welcome to ${projectName}</h1>
+          <p>This is a basic Microsite deployed via the dashboard.</p>
+      </body>
+      </html>
     `;
     fs.writeFileSync(path.join(projectPath, 'index.html'), indexHtml.trim());
-    logger.info(`Initialized default project folder for ${projectName}`);
+    await streamStatus(domain, `Default index.html created`);
   }
 
   return projectPath;
 }
 
 /**
- * Push local project to GitHub
+ * Push project to GitHub
  */
-async function pushToGithub(projectPath, repoUrl) {
-  return new Promise((resolve, reject) => {
-    const tokenRepoUrl = repoUrl.replace(
-      'https://',
-      `https://${GITHUB_USER}:${GITHUB_TOKEN}@`
-    );
+async function pushToGithub(projectPath, repo, domain) {
+  const tokenRepoUrl = repo.url.replace('https://', `https://${GITHUB_USER}:${GITHUB_TOKEN}@`);
 
+  if (repo.status === 'new') {
     const cmds = [
-      `cd ${projectPath}`,
       'if [ ! -d ".git" ]; then git init; fi',
       'git remote remove origin || true',
       `git remote add origin ${tokenRepoUrl}`,
@@ -122,21 +140,19 @@ async function pushToGithub(projectPath, repoUrl) {
       'git push -u origin main -f'
     ].join(' && ');
 
-    exec(cmds, (err, stdout, stderr) => {
-      if (err) {
-        logger.error(`Git push error: ${stderr}`);
-        return reject(err);
-      }
-      logger.info(`Project pushed to GitHub: ${stdout}`);
-      resolve(true);
-    });
-  });
+    await runCommand(domain, cmds, [], { cwd: projectPath });
+    await streamStatus(domain, `Project pushed to GitHub`);
+  } else {
+    // Already existing repo, just pull latest
+    await runCommand(domain, 'git', ['pull', tokenRepoUrl, 'main'], { cwd: projectPath });
+    await streamStatus(domain, `Existing repo updated on server`);
+  }
 }
 
 /**
  * Create Nginx config + SSL
  */
-function createNginxConfig(domain, projectName) {
+async function createNginxConfig(domain, projectName) {
   const configContent = `
 server {
     listen 80;
@@ -145,8 +161,10 @@ server {
     root ${PROJECTS_DIR}/${projectName};
     index index.html;
 
-    if ($allowed_country = 0) { return 403; }
-    if ($allowed_region = 0) { return 403; }
+    # Restrict to India -> Maharashtra
+    if ($geoip2_country_code != "IN") {
+        return 403;
+    }
 
     location / {
         try_files $uri $uri/ =404;
@@ -156,33 +174,24 @@ server {
 
   const configPath = path.join(NGINX_SITES_AVAILABLE, projectName);
   fs.writeFileSync(configPath, configContent);
-  logger.info(`Nginx config written for ${domain}`);
+  await streamStatus(domain, `Nginx config written for ${domain}`);
 
   const enabledPath = path.join(NGINX_SITES_ENABLED, projectName);
   if (!fs.existsSync(enabledPath)) fs.symlinkSync(configPath, enabledPath);
 
-  exec('nginx -s reload', (err, stdout, stderr) => {
-    if (err) {
-      logger.error(`Nginx reload error: ${stderr}`);
-    } else {
-      logger.info(`Nginx reloaded for ${domain}`);
-      const certbotCmd = `certbot --nginx -d ${domain} --non-interactive --agree-tos -m admin@${domain} --redirect`;
-      exec(certbotCmd, (errCert, stdoutCert, stderrCert) => {
-        if (errCert) {
-          logger.error(`Certbot SSL install error: ${stderrCert}`);
-        } else {
-          logger.info(`Certbot SSL installed for ${domain}`);
-          exec('certbot renew --dry-run', (errRenew, stdoutRenew, stderrRenew) => {
-            if (errRenew) {
-              logger.error(`Certbot renewal test failed: ${stderrRenew}`);
-            } else {
-              logger.info(`Certbot renewal test successful: ${stdoutRenew}`);
-            }
-          });
-        }
-      });
-    }
-  });
+  try {
+    await runCommand(domain, 'nginx', ['-s', 'reload']);
+    await streamStatus(domain, `Nginx reloaded for ${domain}`);
+  } catch (err) {
+    await streamStatus(domain, `Nginx reload error: ${err.message}`, 'error');
+  }
+
+  try {
+    await runCommand(domain, 'certbot', ['--nginx', '-d', domain, '--non-interactive', '--agree-tos', '-m', `admin@${domain}`, '--redirect']);
+    await streamStatus(domain, `Certbot SSL installed for ${domain}`);
+  } catch (err) {
+    await streamStatus(domain, `Certbot SSL error: ${err.message}`, 'error');
+  }
 }
 
 /**
@@ -191,10 +200,7 @@ server {
 async function updateCacheForProject(project) {
   const repoName = sanitizeRepoName(project.domain);
   try {
-    const { data } = await octokit.repos.get({
-      owner: GITHUB_USER,
-      repo: repoName,
-    });
+    const { data } = await octokit.repos.get({ owner: GITHUB_USER, repo: repoName });
     githubCache.set(`${GITHUB_USER}/${repoName}`, {
       stars: data.stargazers_count,
       forks: data.forks_count,
@@ -203,9 +209,9 @@ async function updateCacheForProject(project) {
       lastUpdated: data.updated_at,
       repoUrl: data.html_url,
     });
-    logger.info(`GitHub cache updated for ${repoName}`);
+    await streamStatus(project.domain, `GitHub cache updated for ${repoName}`);
   } catch (err) {
-    logger.error(`Failed to update GitHub cache for ${repoName}: ${err.message}`);
+    await streamStatus(project.domain, `Failed to update GitHub cache: ${err.message}`, 'error');
   }
 }
 
@@ -217,12 +223,12 @@ async function deleteProject(project) {
     const repoName = sanitizeRepoName(project.domain);
     const projectPath = path.join(PROJECTS_DIR, repoName);
 
-    fs.rm(projectPath, { recursive: true, force: true }, (err) => {
+    fs.rm(projectPath, { recursive: true, force: true }, async (err) => {
       if (err) {
-        logger.error(`Failed to delete project folder ${projectPath}: ${err.message}`);
+        await streamStatus(project.domain, `Failed to delete project folder: ${err.message}`, 'error');
         return reject(err);
       }
-      logger.info(`Project folder deleted: ${projectPath}`);
+      await streamStatus(project.domain, `Project folder deleted: ${projectPath}`);
       resolve(true);
     });
   });
@@ -231,18 +237,22 @@ async function deleteProject(project) {
 /**
  * Main deploy function
  */
-async function deployProject(project, templateRepoUrl = null) {
+async function deployProject(project) {
   try {
-    const repoName = sanitizeRepoName(project.domain);
-    const repoUrl = project.githubRepo || await createGithubRepo(project.domain);
-    const projectPath = await initProjectFolder(repoName, templateRepoUrl);
-    await pushToGithub(projectPath, repoUrl);
+    const repo = project.githubRepo
+      ? { status: 'old', url: project.githubRepo }
+      : await createGithubRepo(project.domain);
+
+    const projectPath = await initProjectFolder(sanitizeRepoName(project.domain), project.domain);
+
+    await pushToGithub(projectPath, repo, project.domain);
     await updateCacheForProject(project);
-    createNginxConfig(project.domain, repoName);
+    await createNginxConfig(project.domain, sanitizeRepoName(project.domain));
     await publishGitHubStatus(project);
-    logger.info(`Deployment finished for ${project.domain}`);
+
+    await streamStatus(project.domain, `Deployment finished for ${project.domain}`);
   } catch (err) {
-    logger.error(`Deployment failed for ${project.domain}: ${err.message}`);
+    await streamStatus(project.domain, `Deployment failed: ${err.message}`, 'error');
   }
 }
 
